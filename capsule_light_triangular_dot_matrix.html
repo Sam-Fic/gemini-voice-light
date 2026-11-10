@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Capsule Light &amp; Triangular Dot Matrix</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #070b12; }
+        #mainCanvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+
+        #panel {
+            position: fixed;
+            top: 16px;
+            left: 16px;
+            z-index: 10;
+            width: 280px;
+            padding: 16px;
+            border-radius: 14px;
+            background: rgba(15, 23, 42, 0.78);
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            backdrop-filter: blur(10px);
+            color: #e2e8f0;
+            font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            font-size: 13px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+        }
+        #panel h1 {
+            font-size: 14px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            margin-bottom: 14px;
+            color: #f1f5f9;
+        }
+        .row { margin-bottom: 12px; }
+        .row label {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+            color: #cbd5e1;
+        }
+        .row label span.val { color: #7dd3fc; font-variant-numeric: tabular-nums; }
+        input[type="range"] {
+            width: 100%;
+            accent-color: #38bdf8;
+            cursor: pointer;
+        }
+        .btn-row { display: flex; gap: 8px; margin-top: 6px; }
+        button {
+            flex: 1;
+            padding: 8px 10px;
+            border-radius: 9px;
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            background: rgba(30, 41, 59, 0.9);
+            color: #e2e8f0;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        button:hover { border-color: rgba(125, 211, 252, 0.6); }
+        .theme-row { display: flex; gap: 8px; margin-top: 4px; }
+        .theme-btn { flex: 1; }
+        .theme-btn[data-theme="cyan"]    { border-color: rgba(56,189,248,0.7);  color:#7dd3fc; }
+        .theme-btn[data-theme="violet"]  { border-color: rgba(167,139,250,0.7); color:#c4b5fd; }
+        .theme-btn[data-theme="emerald"] { border-color: rgba(52,211,153,0.7);  color:#6ee7b7; }
+        .hint { margin-top: 12px; font-size: 11px; color: #64748b; line-height: 1.5; }
+    </style>
+</head>
+<body>
+    <canvas id="mainCanvas"></canvas>
+
+    <div id="panel">
+        <h1>Capsule Light &amp; Dot Matrix</h1>
+
+        <div class="row">
+            <label>Speed <span class="val" id="speedVal">1.4x</span></label>
+            <input type="range" id="speedRange" min="0" max="3" step="0.1" value="1.4">
+        </div>
+
+        <div class="row">
+            <label>Glow Intensity <span class="val" id="glowVal">80%</span></label>
+            <input type="range" id="glowRange" min="0" max="100" step="1" value="80">
+        </div>
+
+        <div class="row">
+            <label>Mask Force <span class="val" id="maskVal">1.2x</span></label>
+            <input type="range" id="maskRange" min="0" max="2" step="0.1" value="1.2">
+        </div>
+
+        <div class="row">
+            <label>Dot Size <span class="val" id="dotSizeVal">1.6px</span></label>
+            <input type="range" id="dotSizeRange" min="0.5" max="4" step="0.1" value="1.6">
+        </div>
+
+        <div class="row">
+            <label>Spacing <span class="val" id="spacingVal">20px</span></label>
+            <input type="range" id="spacingRange" min="8" max="40" step="1" value="20">
+        </div>
+
+        <div class="row">
+            <label>Theme</label>
+            <div class="theme-row">
+                <button class="theme-btn" data-theme="cyan">Cyan</button>
+                <button class="theme-btn" data-theme="violet">Violet</button>
+                <button class="theme-btn" data-theme="emerald">Emerald</button>
+            </div>
+        </div>
+
+        <div class="btn-row">
+            <button id="togglePlayBtn"><span id="playIcon">⏸</span> <span id="playText">Pause</span></button>
+            <button id="toggleMicBtn"><span id="micText">Enable Mic</span></button>
+        </div>
+
+        <div class="hint">拖动滑块调整光晕、点阵与节奏。麦克风需授权后生效。</div>
+    </div>
+
+    <script>
+        // ----- Canvas / context / runtime state declarations -----
+        let width = 0, height = 0;
+        let isRunning = true;
+        let animationId = null;
+
+        const canvas = document.getElementById('mainCanvas');
+        const lightCanvas = document.createElement('canvas');
+        const metaballCanvas = document.createElement('canvas');
+        const dotCanvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const lightCtx = lightCanvas.getContext('2d');
+        const metaballCtx = metaballCanvas.getContext('2d');
+        const dotCtx = dotCanvas.getContext('2d');
+
+        // Extra height reserved below the viewport so the bottom-anchored glow is
+        // fully captured. This keeps the blur kernel from sampling empty space past
+        // the bottom edge (which caused the faded/transparent bottom strip).
+        const bottomPad = 260;
+
+        // ----- Solid colors (no gradients / no effects on the capsule itself) -----
+        const PAGE_BG = '#070b12';       // page background (flat)
+        const CAPSULE_FILL = '#0d1626';  // capsule interior (flat)
+
+        // ----- Capsule mask geometry (recomputed on resize) -----
+        let capsuleLeft = 0, capsuleTop = 0;
+        let capsuleW = 0, capsuleH = 0, capsuleRadius = 0, capsuleBottom = 0;
+
+        // Builds a clean stadium (pill) path: rectangle with two semicircular ends.
+        function capsulePath(c, x, y, w, h) {
+            const r = h / 2;
+            c.beginPath();
+            c.moveTo(x + r, y);
+            c.lineTo(x + w - r, y);
+            c.arc(x + w - r, y + r, r, -Math.PI / 2, Math.PI / 2);
+            c.lineTo(x + r, y + h);
+            c.arc(x + r, y + r, r, Math.PI / 2, (Math.PI * 3) / 2);
+            c.closePath();
+        }
+
+        // Y coordinate of the capsule's LOWER contour at a given x: flat along the
+        // bottom section, then curving up around both semicircular ends.
+        function capsuleLowerEdgeY(x) {
+            const r = capsuleRadius;
+            const cy = capsuleTop + r;
+            const leftCenter = capsuleLeft + r;
+            const rightCenter = capsuleLeft + capsuleW - r;
+            if (x < leftCenter) {
+                const dx = leftCenter - x;
+                return cy + Math.sqrt(Math.max(0, r * r - dx * dx));
+            }
+            if (x > rightCenter) {
+                const dx = x - rightCenter;
+                return cy + Math.sqrt(Math.max(0, r * r - dx * dx));
+            }
+            return capsuleTop + capsuleH;
+        }
+
+        // ----- simulation state settings initialized to screenshot values -----
+        const state = {
+            speed: 1.4,
+            glowIntensity: 0.8,  // 80%
+            maskForce: 1.2,
+            spacing: 20,         // 20px
+            dotRadius: 1.6,      // 1.6px
+            theme: 'cyan'
+        };
+
+        /*
+         * =========================================================================
+         * DESIGN DETAIL 1: Color Palettes & Blob Parameters
+         * Standardized preset colors across cyan, violet, and emerald palettes.
+         * Primary cyan colors are focused on bright white-cyan hues (240, 249, 255)
+         * to prevent muddy or purplish tones from surfacing at high blur values.
+         * =========================================================================
+         */
+        const colorPresets = {
+            cyan: {
+                blobs: [
+                    { r: 56, g: 189, b: 248 },  // Sky cyan
+                    { r: 14, g: 165, b: 233 },  // Deep cyan
+                    { r: 59, g: 130, b: 246 },  // Ocean blue
+                    { r: 38, g: 198, b: 218 },  // Aqua teal
+                    { r: 96, g: 165, b: 250 }   // Light cyan-blue
+                ],
+                dots: { r: 186, g: 230, b: 253 }
+            },
+            violet: {
+                blobs: [
+                    { r: 168, g: 85, b: 247 },
+                    { r: 217, g: 70, b: 239 },
+                    { r: 99, g: 102, b: 241 },
+                    { r: 192, g: 38, b: 211 },
+                    { r: 139, g: 92, b: 246 }
+                ],
+                dots: { r: 243, g: 232, b: 255 }
+            },
+            emerald: {
+                blobs: [
+                    { r: 16, g: 185, b: 129 },
+                    { r: 6, g: 182, b: 212 },
+                    { r: 59, g: 130, b: 246 },
+                    { r: 20, g: 184, b: 166 },
+                    { r: 52, g: 211, b: 153 }
+                ],
+                dots: { r: 167, g: 243, b: 208 }
+            }
+        };
+
+        /*
+         * =========================================================================
+         * DESIGN DETAIL 2: Cohesive Blob Placement & Restrained Drift Amplitude
+         * Baseline positions are anchored symmetrically across the width with restrained 
+         * drift amplitudes (amp: 0.06 - 0.07). This guarantees continuous blob overlap 
+         * and prevents mid-capsule light voids or clustering at the capsule ends.
+         * =========================================================================
+         */
+        /*
+         * Blobs ride the capsule's LOWER CONTOUR: baseX values near 0 / 1 sit inside
+         * the rounded ends, so their core Y bends up along the arc. Each blob also
+         * gets an edge weight (1 in the middle, falling off towards the tips) so the
+         * light gets weaker and dimmer towards the two sides, producing the fade.
+         */
+        const blobs = [
+            { baseX: 0.03, baseRadius: 120, phase: 0.0, speed: 0.011, amp: 0.030 },
+            { baseX: 0.10, baseRadius: 135, phase: 0.9, speed: 0.013, amp: 0.035 },
+            { baseX: 0.17, baseRadius: 145, phase: 1.8, speed: 0.010, amp: 0.040 },
+            { baseX: 0.31, baseRadius: 155, phase: 2.6, speed: 0.014, amp: 0.050 },
+            { baseX: 0.50, baseRadius: 170, phase: 3.4, speed: 0.009, amp: 0.045 }, // Core central blob anchor
+            { baseX: 0.69, baseRadius: 155, phase: 4.2, speed: 0.013, amp: 0.050 },
+            { baseX: 0.83, baseRadius: 145, phase: 5.0, speed: 0.011, amp: 0.040 },
+            { baseX: 0.90, baseRadius: 135, phase: 5.8, speed: 0.012, amp: 0.035 },
+            { baseX: 0.97, baseRadius: 120, phase: 6.6, speed: 0.010, amp: 0.030 }
+        ];
+
+        // Initialize control slider values to match default state
+        document.getElementById('glowRange').value = 80;
+        document.getElementById('glowVal').textContent = '80%';
+        document.getElementById('maskRange').value = 1.2;
+        document.getElementById('maskVal').textContent = '1.2x';
+        document.getElementById('dotSizeRange').value = 1.6;
+        document.getElementById('dotSizeVal').textContent = '1.6px';
+        document.getElementById('spacingRange').value = 20;
+        document.getElementById('spacingVal').textContent = '20px';
+
+        let dots = [];
+
+        // Audio API state
+        let audioContext = null;
+        let analyser = null;
+        let micStream = null;
+        let isMicActive = false;
+        let audioDataArray = null;
+
+        /*
+         * DESIGN DETAIL 3: Audio Inertia / Damping Parameter
+         * Exponential smoothing variable (smoothedVolume) ensures microphone input
+         * creates a smooth, fluid lag instead of jarring, instant volume jumps.
+         */
+        let smoothedVolume = 0;
+
+        // Helper function to evaluate smooth ambient light intensity for any point (x, y).
+        // NOTE: this field is used ONLY for the dot matrix. It deliberately uses each
+        // blob's flat-base radius (dotRadius) and measures height from the flat capsule
+        // bottom, so the curved ends that shape the rendered light never distort how the
+        // dots are pushed, faded or masked.
+        function getAuroraLightIntensity(x, y, computedBlobs) {
+            let intensity = 0;
+            for (let i = 0; i < computedBlobs.length; i++) {
+                const b = computedBlobs[i];
+                const r = b.dotRadius || b.radius;
+                const dx = Math.abs(x - b.x);
+                const widthFactor = r * 1.5;
+                const heightFactor = r * 1.4;
+
+                if (dx < widthFactor) {
+                    // Smooth horizontal cosine curtain spread
+                    const hFactor = Math.cos((dx / widthFactor) * (Math.PI / 2));
+                    // Vertical rise measured from the flat base only.
+                    const vertDist = Math.max(0, capsuleBottom - y);
+                    if (vertDist < heightFactor) {
+                        const vFactor = Math.sin((1 - vertDist / heightFactor) * Math.PI * 0.5);
+                        intensity += hFactor * hFactor * vFactor;
+                    }
+                }
+            }
+            return intensity;
+        }
+
+        function resizeCanvas() {
+            const rect = canvas.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            lightCanvas.width = rect.width * dpr;
+            lightCanvas.height = rect.height * dpr;
+            metaballCanvas.width = rect.width * dpr;
+            metaballCanvas.height = (rect.height + bottomPad) * dpr;
+            dotCanvas.width = rect.width * dpr;
+            dotCanvas.height = rect.height * dpr;
+
+            width = rect.width;
+            height = rect.height;
+
+            // Compute a clean centered horizontal capsule (pill) with margins.
+            capsuleW = Math.min(width * 0.86, 1280);
+            capsuleH = Math.min(height * 0.52, capsuleW * 0.9);
+            capsuleRadius = capsuleH / 2;
+            capsuleLeft = (width - capsuleW) / 2;
+            capsuleTop = (height - capsuleH) / 2;
+            capsuleBottom = capsuleTop + capsuleH;
+
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            lightCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            metaballCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            dotCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+            buildTriangularGrid();
+        }
+
+        // Generate a Triangular (Hexagonal Staggered) dot matrix inside the capsule.
+        // Dots are laid out over the capsule's bounding box; the capsule clip path
+        // trims anything that falls outside the rounded pill outline when drawing.
+        function buildTriangularGrid() {
+            dots = [];
+            const spacing = state.spacing;
+            const rowHeight = spacing * (Math.sqrt(3) / 2); // Triangular isometric altitude
+
+            const cols = Math.ceil(capsuleW / spacing) + 6;
+            // Extra rows below the bottom edge so upward pushes don't open gaps.
+            const extraBottomRows = 5;
+            const rows = Math.ceil(capsuleH / rowHeight) + extraBottomRows + 2;
+
+            for (let r = -extraBottomRows; r < rows; r++) {
+                const localY = capsuleH - (r * rowHeight) - 6; // Bottom up (capsule-local)
+                const y = capsuleTop + localY;
+
+                const rowProgress = r / (rows - 1);
+
+                // Shift alternate rows for Triangular Mesh Grid
+                const xOffset = (Math.abs(r) % 2 === 1) ? spacing * 0.5 : 0;
+
+                for (let c = -3; c < cols; c++) {
+                    const localX = c * spacing + xOffset;
+                    const x = capsuleLeft + localX;
+
+                    dots.push({
+                        baseX: x,
+                        baseY: y,
+                        x: x,
+                        y: y,
+                        vx: 0,
+                        vy: 0,
+                        rowProgress: Math.min(1.0, rowProgress),
+                        phase: Math.random() * Math.PI * 2,
+                        pulseSpeed: 0.015 + Math.random() * 0.02
+                    });
+                }
+            }
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        let time = 0;
+
+        function animate() {
+            if (!isRunning) return;
+
+            /*
+             * =========================================================================
+             * DESIGN DETAIL 4: Microphone Volume Inertia (Exponential Damping)
+             * Uses linear interpolation lerp (smoothedVolume += (target - smoothedVolume) * 0.12)
+             * to inject a subtle, organic lag into speed and glow dynamics when mic is active.
+             * =========================================================================
+             */
+            let volumeFactor = 0;
+            if (isMicActive && analyser && audioDataArray) {
+                analyser.getByteFrequencyData(audioDataArray);
+                let sum = 0;
+                for (let i = 0; i < audioDataArray.length; i++) {
+                    sum += audioDataArray[i];
+                }
+                const average = sum / audioDataArray.length;
+                // Slightly more sensitive mapping so normal speech clearly drives the speed
+                const targetVolume = Math.min(1.0, average / 96.0); // Raw target volume
+
+                // Apply slight inertia/easing (0.18 factor reacts a bit quicker)
+                smoothedVolume += (targetVolume - smoothedVolume) * 0.18;
+                volumeFactor = smoothedVolume;
+            } else {
+                smoothedVolume = 0;
+            }
+
+            // Dynamic speed & glow intensity boosted by smoothed volume.
+            // Louder microphone input adds more speed (up to +2.6x on top of the slider).
+            const activeSpeed = state.speed + (isMicActive ? volumeFactor * 2.6 : 0);
+            const activeGlowIntensity = state.glowIntensity * (isMicActive ? (1.0 + volumeFactor * 1.4) : 1.0);
+
+            time += 0.019 * activeSpeed;
+
+            ctx.clearRect(0, 0, width, height);
+            // Flat solid page background (everything outside the capsule).
+            ctx.fillStyle = PAGE_BG;
+            ctx.fillRect(0, 0, width, height);
+
+            lightCtx.clearRect(0, 0, width, height);
+            metaballCtx.clearRect(0, 0, width, height + bottomPad);
+
+            const theme = colorPresets[state.theme];
+
+            // Compute positions with cohesive spring restraint to avoid center voids
+            const computedBlobs = blobs.map((b, idx) => {
+                b.phase += b.speed * activeSpeed;
+                
+                // Controlled sinusoidal wave offset from baseline position
+                const offset = Math.sin(b.phase + Math.sin(time * 0.5 + idx)) * (capsuleW * b.amp);
+                const x = capsuleLeft + (b.baseX * capsuleW) + offset;
+                
+                // Ride the capsule's LOWER CONTOUR: flat along the bottom section,
+                // curving up around both rounded ends. The outermost blobs therefore
+                // travel along the arc instead of a straight horizontal line.
+                const y = capsuleLowerEdgeY(x);
+
+                // Edge weight: 1 in the middle, falling off towards the two tips.
+                // It shrinks the blobs near the sides so the light gets weaker and
+                // dimmer there, creating the fade.
+                // Fade all the way to zero at the tips: the outermost blobs (which sit
+                // deepest on the arc) become almost fully transparent.
+                const edge = Math.pow(Math.sin(Math.PI * Math.min(1, Math.max(0, b.baseX))), 1.0);
+
+                const pulse = 0.95 + Math.sin(b.phase * 1.5) * 0.15;
+                const flatRadius = b.baseRadius * activeGlowIntensity * pulse;
+                const radius = flatRadius * edge;   // rendered light (with edge fade)
+                const dotRadius = flatRadius;      // dot field (ignores the curved ends)
+                const color = theme.blobs[idx % theme.blobs.length];
+
+                return { x, y, radius, dotRadius, color, phase: b.phase, edge };
+            });
+
+            // Pass A: Draw bottom-focused radial gradient spheres onto metaball canvas for threshold fusion
+            metaballCtx.save();
+            /*
+             * Additive ('lighter') accumulation is the key to the gooey metaball look:
+             * neighbouring pools sum their falloffs instead of covering each other, so
+             * the gaps between blob centers stay bright and weld into one continuous
+             * body rather than reading as five separate lights.
+             */
+            metaballCtx.globalCompositeOperation = 'lighter';
+
+            computedBlobs.forEach(b => {
+                const fuseRadius = b.radius * 2.9;
+                // The core follows the blob itself, which rides the capsule's lower
+                // contour (bottom line in the middle, arcs at both ends).
+                const coreY = b.y;
+                const grad = metaballCtx.createRadialGradient(b.x, coreY, 0, b.x, coreY, fuseRadius);
+                /*
+                 * Smooth, finely-sampled bell falloff. A handful of hard color stops
+                 * produces faint concentric rings, and when several blobs are added
+                 * together those rings line up into the visible outlines between the
+                 * individual units. Sampling a smooth bell at ~30 stops keeps both the
+                 * value and its slope continuous, so overlapping blobs melt together
+                 * with no perceivable seam.
+                 */
+                const STEPS = 30;
+                for (let s = 0; s <= STEPS; s++) {
+                    const t = s / STEPS;
+                    // Smooth bell that reaches exactly 0 at the rim (no boundary ring).
+                    // The edge weight dims the blobs towards the two tips.
+                    const alpha = Math.exp(-3.0 * t * t) * (1 - t * t) * 0.62 * b.edge;
+                    // White-hot core blending out into the blob hue.
+                    const mix = Math.min(1, t / 0.45);
+                    const cr = Math.round(240 + (b.color.r - 240) * mix);
+                    const cg = Math.round(249 + (b.color.g - 249) * mix);
+                    const cb2 = Math.round(255 + (b.color.b - 255) * mix);
+                    grad.addColorStop(t, `rgba(${cr}, ${cg}, ${cb2}, ${alpha.toFixed(4)})`);
+                }
+
+                // Draw the FULL circle (not just the upper half). The lower half lives
+                // inside the bottomPad buffer below the viewport, so the Gaussian blur
+                // always has real content to sample and the bottom edge never fades.
+                metaballCtx.beginPath();
+                metaballCtx.arc(b.x, coreY, fuseRadius, 0, Math.PI * 2);
+                metaballCtx.fillStyle = grad;
+                metaballCtx.fill();
+            });
+
+            metaballCtx.restore();
+
+            // Pass B: Combine metaball fused canvas with controlled Gaussian diffusion filter
+            lightCtx.save();
+            lightCtx.globalCompositeOperation = 'source-over';
+            lightCtx.filter = 'blur(30px)';
+            // Draw 1:1. The metaball canvas extends bottomPad below the viewport, so
+            // the blur kernel no longer samples empty space past the bottom edge and
+            // the bottom strip stays as bright as the rest of the glow.
+            lightCtx.drawImage(metaballCanvas, 0, 0, width, height + bottomPad);
+
+            /*
+             * Soft liquid base (single path, one gradient -> cheap, no seams/noise).
+             * - The fill is extended BELOW the capsule base by wavePad, so the 30px blur
+             *   always has real pixels underneath. Stopping exactly at the base made the
+             *   blur sample transparency below and thin out the bottom density. The
+             *   overshoot is later clipped away by the capsule mask.
+             * - The gradient loses almost all of its alpha by the time it reaches the
+             *   wave crest, so the top edge of the fill stays soft and never reads as a
+             *   darker band pressing into the glow.
+             */
+            const primaryColor = theme.blobs[0];
+            const secondaryColor = theme.blobs[1];
+            const sceneRight = capsuleLeft + capsuleW;
+            const wavePad = 70;
+
+            // Span the FULL capsule height so the band is still clearly lit where the
+            // contour has climbed up the rounded ends (up to ~half the capsule height),
+            // while remaining brightest at the flat bottom.
+            const waveGradient = lightCtx.createLinearGradient(0, capsuleBottom, 0, capsuleTop);
+            waveGradient.addColorStop(0.00, 'rgba(255, 255, 255, 0.95)');
+            waveGradient.addColorStop(0.10, `rgba(${primaryColor.r}, ${primaryColor.g}, ${primaryColor.b}, 0.80)`);
+            waveGradient.addColorStop(0.30, `rgba(${secondaryColor.r}, ${secondaryColor.g}, ${secondaryColor.b}, 0.55)`);
+            waveGradient.addColorStop(0.55, `rgba(${secondaryColor.r}, ${secondaryColor.g}, ${secondaryColor.b}, 0.25)`);
+            waveGradient.addColorStop(0.80, `rgba(${secondaryColor.r}, ${secondaryColor.g}, ${secondaryColor.b}, 0.06)`);
+            waveGradient.addColorStop(1.00, 'rgba(0,0,0,0)');
+
+            /*
+             * The wave body itself now rides the capsule's lower contour: its bottom
+             * edge follows the flat bottom and then bends up around both rounded ends,
+             * and the swell that defines its crest is measured from that local edge.
+             * Because the gradient is anchored at the flat base, the light is naturally
+             * dimmer along the arcs and fades out towards the tips.
+             */
+            lightCtx.beginPath();
+            for (let x = capsuleLeft; x <= sceneRight; x += 6) {
+                let yOffset = 0;
+                for (let j = 0; j < computedBlobs.length; j++) {
+                    const cb = computedBlobs[j];
+                    const influence = cb.radius * 2.6;
+                    const dist = Math.abs(x - cb.x);
+                    if (dist < influence) {
+                        const factor = Math.cos((dist / influence) * (Math.PI / 2));
+                        yOffset += Math.pow(factor, 1.3) * (cb.radius * 0.95);
+                    }
+                }
+                const baseY = capsuleLowerEdgeY(x);
+                const crestY = baseY - (yOffset * 0.55) - Math.sin(x * 0.015 + time * 1.2) * 5;
+                if (x === capsuleLeft) lightCtx.moveTo(x, crestY);
+                else lightCtx.lineTo(x, crestY);
+            }
+            // Bottom edge follows the contour, shifted down by wavePad so the blur
+            // still has real pixels underneath (the overshoot is clipped away later).
+            for (let x = sceneRight; x >= capsuleLeft; x -= 6) {
+                lightCtx.lineTo(x, capsuleLowerEdgeY(x) + wavePad);
+            }
+            lightCtx.closePath();
+            lightCtx.fillStyle = waveGradient;
+            lightCtx.fill();
+
+            lightCtx.restore();
+
+            // Composite the liquid light layer onto the main canvas, clipped to the
+            // capsule so both the glow and its edges stay strictly inside the pill.
+            ctx.save();
+            capsulePath(ctx, capsuleLeft, capsuleTop, capsuleW, capsuleH);
+            ctx.clip();
+            ctx.fillStyle = CAPSULE_FILL;
+            ctx.fillRect(capsuleLeft, capsuleTop, capsuleW, capsuleH);
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.drawImage(lightCanvas, 0, 0, width, height);
+            ctx.restore();
+
+            /*
+             * =========================================================================
+             * DESIGN DETAIL 8: Axis-Driven Non-Overlapping Matrix Grid Displacement
+             * 1. Baseline Axis at Y = 50% height acts as a central elastic horizontal spring.
+             * 2. Bottom light sources upward forces bend this baseline into a smooth wave curve.
+             * 3. Grid dots inherit vertical offsets scaled exponentially by distance to the axis.
+             * 4. Dots displace strictly along vertical column lines (X = baseX), completely
+             *    preventing grid overlap or crossing while maintaining crisp hexagonal alignment.
+             * =========================================================================
+             */
+            /*
+             * Light-driven push field.
+             * The horizontal strength of the glow is sampled once per frame along the
+             * capsule base, so every column of dots is lifted in proportion to how
+             * bright the light actually is there. Using a whole-column strength (plus a
+             * broad vertical falloff below) lets the push reach far up the matrix,
+             * instead of only the thin band right next to the light.
+             */
+            const pushStep = 4;
+            const pushCount = Math.ceil(capsuleW / pushStep) + 2;
+            const pushField = new Float32Array(pushCount);
+            for (let i = 0; i < pushCount; i++) {
+                const x = capsuleLeft + i * pushStep;
+                const strength = getAuroraLightIntensity(x, capsuleBottom - 4, computedBlobs);
+                // Fade the push itself out towards the two tips: near the edges the
+                // light is gone, so it cannot move the dots at all.
+                const nx = Math.max(0, Math.min(1, (i * pushStep) / capsuleW));
+                const pushEdge = Math.pow(Math.sin(Math.PI * nx), 1.0);
+                pushField[i] = Math.pow(strength, 1.25) * 30.0 * activeGlowIntensity * pushEdge;
+            }
+            function sampleLightPush(x) {
+                const t = (x - capsuleLeft) / pushStep;
+                const i0 = Math.max(0, Math.min(pushCount - 1, Math.floor(t)));
+                const i1 = Math.min(pushCount - 1, i0 + 1);
+                const f = Math.max(0, Math.min(1, t - i0));
+                return pushField[i0] * (1 - f) + pushField[i1] * f;
+            }
+
+            // Render the dots onto their own transparent layer so a single, very
+            // light blur can be applied to the whole matrix at once.
+            dotCtx.clearRect(0, 0, width, height);
+            dotCtx.save();
+            dotCtx.globalCompositeOperation = 'source-over';
+            const dotColor = theme.dots;
+
+            for (let i = 0; i < dots.length; i++) {
+                const dot = dots[i];
+                dot.phase += dot.pulseSpeed * activeSpeed;
+                const shimmer = Math.sin(dot.phase) * 0.2 + 0.8;
+
+                // The same luminance field that draws the glow also drives the dots.
+                // Two parts working together:
+                //   1) columnPush + a very broad vertical falloff -> the whole matrix is
+                //      carried along with the light (large affected area);
+                //   2) localPush follows the light at the dot's OWN height -> lower dots
+                //      are lifted more than higher ones, compressing the rows so the
+                //      grid keeps that "squeezed" density variation.
+                const lightIntensity = getAuroraLightIntensity(dot.baseX, dot.baseY, computedBlobs);
+                const nx = Math.max(0, Math.min(1, (dot.baseX - capsuleLeft) / capsuleW));
+                const pushEdge = Math.pow(Math.sin(Math.PI * nx), 1.0);
+                const columnPush = sampleLightPush(dot.baseX);
+                const vertFade = Math.exp(-Math.pow((capsuleBottom - dot.baseY) / (capsuleH * 0.95), 2));
+                const localPush = Math.pow(lightIntensity, 1.25) * 26.0 * activeGlowIntensity * pushEdge;
+
+                // Smooth elastic interpolation for target Y position
+                const targetY = dot.baseY - (columnPush * vertFade + localPush);
+                dot.y += (targetY - dot.y) * 0.12;
+                dot.x = dot.baseX; // Strict vertical displacement prevents dot matrix crossover
+
+                // Y progress within the capsule: 0 at its bottom, 1 at its top
+                let yProgress = Math.max(0, Math.min(1, (capsuleBottom - dot.baseY) / capsuleH));
+
+                // Dynamic fade height: Aurora light intensity smoothly lifts dot visibility higher
+                let adjustedYProgress = Math.max(0, yProgress - (lightIntensity * 0.3));
+
+                // Base brightness fades out smoothly reaching 0 at ~60% adjusted height
+                let baseBrightness = Math.max(0, 1.0 - (adjustedYProgress / 0.6));
+                baseBrightness = Math.pow(baseBrightness, 1.4);
+
+                // Bottom 1/3 Fade-in Gradient: 0 opacity at absolute bottom, ramping up to 1.0 at 1/3 height
+                const bottomFadeFactor = Math.min(1.0, yProgress / 0.333);
+
+                // Invert: Strong light reduces dot opacity in the lower regions
+                const lightCutout = Math.min(1.0, lightIntensity * state.maskForce);
+                const maskDepth = Math.pow(Math.max(0, Math.min(1, (dot.baseY - capsuleTop) / capsuleH)), 2);
+
+                // Fade the dots out towards the two ends of the capsule so the matrix
+                // dissolves to fully transparent at the left/right edges.
+                const dotEdgeFade = Math.pow(Math.sin(Math.PI * nx), 1.0);
+
+                let finalOpacity = baseBrightness * bottomFadeFactor * (1 - lightCutout * 0.85 * maskDepth) * shimmer * dotEdgeFade;
+                finalOpacity = Math.max(0.0, Math.min(0.95, finalOpacity));
+
+                /*
+                 * DESIGN DETAIL 9: Barely-Blurred Soft Dot Layer
+                 * Dots are drawn solid on the offscreen layer; a very light blur is
+                 * applied once when compositing so they read as soft points.
+                 */
+                if (finalOpacity > 0.01) {
+                    const radius = state.dotRadius * (0.8 + (1 - yProgress) * 0.4);
+
+                    dotCtx.beginPath();
+                    dotCtx.arc(dot.x, dot.y, radius, 0, Math.PI * 2);
+                    dotCtx.fillStyle = `rgba(${dotColor.r}, ${dotColor.g}, ${dotColor.b}, ${finalOpacity})`;
+                    dotCtx.fill();
+                }
+            }
+            dotCtx.restore();
+
+            // Composite the dot layer onto the glow, clipped to the capsule, with a
+            // very slight blur (0.7px) so the dots are softly antialiased.
+            ctx.save();
+            capsulePath(ctx, capsuleLeft, capsuleTop, capsuleW, capsuleH);
+            ctx.clip();
+            ctx.filter = 'blur(0.45px)';
+            ctx.globalCompositeOperation = 'screen';
+            ctx.drawImage(dotCanvas, 0, 0, width, height);
+            ctx.restore();
+
+            animationId = requestAnimationFrame(animate);
+        }
+
+        animate();
+
+        // Microphone Setup Function
+        async function toggleMicrophone() {
+            const micBtn = document.getElementById('toggleMicBtn');
+            const micText = document.getElementById('micText');
+
+            if (isMicActive) {
+                // Disable microphone
+                if (micStream) {
+                    micStream.getTracks().forEach(track => track.stop());
+                }
+                if (audioContext) {
+                    audioContext.close();
+                }
+                isMicActive = false;
+                micBtn.classList.remove('bg-emerald-600/40', 'border-emerald-400', 'text-emerald-300');
+                micBtn.classList.add('bg-slate-800', 'border-slate-700', 'text-slate-300');
+                micText.textContent = 'Enable Mic';
+                return;
+            }
+
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(micStream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 64;
+                analyser.smoothingTimeConstant = 0.8;
+                source.connect(analyser);
+
+                audioDataArray = new Uint8Array(analyser.frequencyBinCount);
+                isMicActive = true;
+
+                micBtn.classList.remove('bg-slate-800', 'border-slate-700', 'text-slate-300');
+                micBtn.classList.add('bg-emerald-600/40', 'border-emerald-400', 'text-emerald-300');
+                micText.textContent = 'Mic Active';
+            } catch (err) {
+                console.error('Microphone access error:', err);
+                alert('Could not access microphone. Please allow microphone permissions.');
+            }
+        }
+
+        document.getElementById('toggleMicBtn').addEventListener('click', toggleMicrophone);
+
+        // UI Control Event Listeners
+        const playBtn = document.getElementById('togglePlayBtn');
+        const playIcon = document.getElementById('playIcon');
+        const playText = document.getElementById('playText');
+
+        playBtn.addEventListener('click', () => {
+            isRunning = !isRunning;
+            if (isRunning) {
+                playIcon.textContent = '⏸';
+                playText.textContent = 'Pause';
+                animate();
+            } else {
+                playIcon.textContent = '▶';
+                playText.textContent = 'Play';
+                cancelAnimationFrame(animationId);
+            }
+        });
+
+        document.getElementById('speedRange').addEventListener('input', (e) => {
+            state.speed = parseFloat(e.target.value);
+            document.getElementById('speedVal').textContent = state.speed.toFixed(1) + 'x';
+        });
+
+        document.getElementById('glowRange').addEventListener('input', (e) => {
+            state.glowIntensity = parseInt(e.target.value) / 100;
+            document.getElementById('glowVal').textContent = e.target.value + '%';
+        });
+
+        document.getElementById('maskRange').addEventListener('input', (e) => {
+            state.maskForce = parseFloat(e.target.value);
+            document.getElementById('maskVal').textContent = state.maskForce.toFixed(1) + 'x';
+        });
+
+        document.getElementById('spacingRange').addEventListener('input', (e) => {
+            state.spacing = parseInt(e.target.value);
+            document.getElementById('spacingVal').textContent = state.spacing + 'px';
+            buildTriangularGrid();
+        });
+
+        document.getElementById('dotSizeRange').addEventListener('input', (e) => {
+            state.dotRadius = parseFloat(e.target.value);
+            document.getElementById('dotSizeVal').textContent = state.dotRadius.toFixed(1) + 'px';
+        });
+
+        document.querySelectorAll('.theme-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.theme-btn').forEach(b => {
+                    b.classList.remove('bg-blue-600/40', 'border-cyan-400', 'text-cyan-300');
+                    b.classList.add('bg-slate-900', 'border-slate-700', 'text-slate-300');
+                });
+
+                const target = e.currentTarget;
+                target.classList.remove('bg-slate-900', 'border-slate-700', 'text-slate-300');
+                target.classList.add('bg-blue-600/40', 'border-cyan-400', 'text-cyan-300');
+
+                state.theme = target.getAttribute('data-theme');
+            });
+        });
+
+        // Mark the default cyan theme button as active on load
+        (function initTheme() {
+            const active = document.querySelector('.theme-btn[data-theme="cyan"]');
+            if (active) {
+                active.classList.remove('bg-slate-900', 'border-slate-700', 'text-slate-300');
+                active.classList.add('bg-blue-600/40', 'border-cyan-400', 'text-cyan-300');
+            }
+        })();
+    </script>
+</body>
+</html>
