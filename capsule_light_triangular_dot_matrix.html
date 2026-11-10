@@ -344,31 +344,39 @@
             buildTriangularGrid();
         }
 
-        // Generate a Triangular (Hexagonal Staggered) dot matrix inside the capsule.
-        // Dots are laid out over the capsule's bounding box; the capsule clip path
-        // trims anything that falls outside the rounded pill outline when drawing.
+        // Generate a perspective Triangular (Hexagonal Staggered) dot matrix inside
+        // the capsule. The matrix is treated as a plane receding towards the top:
+        //   - near = bottom, far = top
+        //   - row / column gaps shrink with height  -> near sparse, far dense
+        //   - each dot stores its depth scale        -> near large, far small
+        // The capsule clip path trims anything outside the rounded pill.
         function buildTriangularGrid() {
             dots = [];
             const spacing = state.spacing;
-            const rowHeight = spacing * (Math.sqrt(3) / 2); // Triangular isometric altitude
-
-            const cols = Math.ceil(capsuleW / spacing) + 6;
-            // Extra rows below the bottom edge so upward pushes don't open gaps.
+            const baseRowH = spacing * (Math.sqrt(3) / 2);
+            const PERSPECTIVE = 2.2;   // higher = stronger depth compression
+            const cx = capsuleLeft + capsuleW / 2;
             const extraBottomRows = 5;
-            const rows = Math.ceil(capsuleH / rowHeight) + extraBottomRows + 2;
 
-            for (let r = -extraBottomRows; r < rows; r++) {
-                const localY = capsuleH - (r * rowHeight) - 6; // Bottom up (capsule-local)
-                const y = capsuleTop + localY;
+            // Start a few rows below the capsule bottom so upward pushes don't
+            // open gaps along the lower edge.
+            let y = capsuleBottom - 4 + extraBottomRows * baseRowH;
+            let row = -extraBottomRows;
 
-                const rowProgress = r / (rows - 1);
+            while (y > capsuleTop - 40) {
+                // 0 at the bottom (near), 1 at the top (far)
+                const t = Math.max(0, Math.min(1, (capsuleBottom - y) / capsuleH));
+                const depth = 1 / (1 + PERSPECTIVE * t);   // 1 near -> ~0.45 far
 
-                // Shift alternate rows for Triangular Mesh Grid
-                const xOffset = (Math.abs(r) % 2 === 1) ? spacing * 0.5 : 0;
+                const rowGap = baseRowH * depth;
+                const xGap = spacing * depth;
 
-                for (let c = -3; c < cols; c++) {
-                    const localX = c * spacing + xOffset;
-                    const x = capsuleLeft + localX;
+                // Shift alternate rows for the triangular mesh
+                const xOffset = (Math.abs(row) % 2 === 1) ? xGap * 0.5 : 0;
+                const halfCols = Math.ceil((capsuleW / 2) / xGap) + 3;
+
+                for (let c = -halfCols; c <= halfCols; c++) {
+                    const x = cx + c * xGap + xOffset;
 
                     dots.push({
                         baseX: x,
@@ -377,11 +385,15 @@
                         y: y,
                         vx: 0,
                         vy: 0,
-                        rowProgress: Math.min(1.0, rowProgress),
+                        rowProgress: t,
+                        depth: depth,
                         phase: Math.random() * Math.PI * 2,
                         pulseSpeed: 0.015 + Math.random() * 0.02
                     });
                 }
+
+                y -= rowGap;
+                row++;
             }
         }
 
@@ -693,7 +705,9 @@
                  * applied once when compositing so they read as soft points.
                  */
                 if (finalOpacity > 0.01) {
-                    const radius = state.dotRadius * (0.8 + (1 - yProgress) * 0.4);
+                    // Perspective sizing: near (bottom) larger, far (top) smaller.
+                    const depthScale = dot.depth != null ? dot.depth : 1;
+                    const radius = state.dotRadius * (0.15 + 1.1 * depthScale);
 
                     dotCtx.beginPath();
                     dotCtx.arc(dot.x, dot.y, radius, 0, Math.PI * 2);
