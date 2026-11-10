@@ -6,7 +6,7 @@
     <title>Capsule Light &amp; Triangular Dot Matrix</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body { width: 100%; height: 100%; overflow: hidden; background: #070b12; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #ffffff; }
         #mainCanvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
 
         /* Horizontal control bar pinned to the bottom, clear of the capsule. */
@@ -20,7 +20,7 @@
             flex-wrap: wrap;
             align-items: flex-end;
             justify-content: center;
-            gap: 10px 18px;
+            gap: 10px 16px;
             width: max-content;
             max-width: 96vw;
             padding: 11px 18px;
@@ -38,7 +38,7 @@
             flex-direction: column;
             gap: 5px;
             flex: 0 0 auto;
-            width: 148px;
+            width: 136px;
         }
         .ctl > label {
             display: flex;
@@ -66,12 +66,20 @@
             white-space: nowrap;
         }
         button:hover { border-color: rgba(125, 211, 252, 0.6); }
-        .ctl-theme { width: 188px; }
+        .ctl-theme { width: 180px; }
         .theme-row { display: flex; gap: 6px; }
         .theme-btn { flex: 1; }
         .theme-btn[data-theme="cyan"]    { border-color: rgba(56,189,248,0.7);  color:#7dd3fc; }
         .theme-btn[data-theme="violet"]  { border-color: rgba(167,139,250,0.7); color:#c4b5fd; }
         .theme-btn[data-theme="emerald"] { border-color: rgba(52,211,153,0.7);  color:#6ee7b7; }
+        .ctl-bg { width: 108px; }
+        .bg-row { display: flex; gap: 6px; }
+        .bg-btn { flex: 1; }
+        .bg-btn.active {
+            border-color: rgba(125, 211, 252, 0.9);
+            background: rgba(56, 189, 248, 0.18);
+            color: #7dd3fc;
+        }
         .ctl-actions { width: auto; }
         .btn-row { display: flex; gap: 8px; }
     </style>
@@ -114,6 +122,14 @@
             </div>
         </div>
 
+        <div class="ctl ctl-bg">
+            <label>Background</label>
+            <div class="bg-row">
+                <button class="bg-btn active" data-bg="white">White</button>
+                <button class="bg-btn" data-bg="dark">Dark</button>
+            </div>
+        </div>
+
         <div class="ctl ctl-actions">
             <label>Playback</label>
             <div class="btn-row">
@@ -144,8 +160,10 @@
         const bottomPad = 260;
 
         // ----- Solid colors (no gradients / no effects on the capsule itself) -----
-        const PAGE_BG = '#070b12';       // page background (flat)
-        const CAPSULE_FILL = '#0d1626';  // capsule interior (flat)
+        const PAGE_BG = '#ffffff';       // page background — white preset
+        const DARK_BG = '#070b12';       // page background — dark preset
+        const CAPSULE_FILL = '#0d1626';  // capsule interior on dark background
+        const CAPSULE_FILL_LIGHT = '#e3ebf5'; // capsule interior on white background
 
         // ----- Capsule mask geometry (recomputed on resize) -----
         let capsuleLeft = 0, capsuleTop = 0;
@@ -188,7 +206,8 @@
             maskForce: 1.2,
             spacing: 25,         // 25px
             dotRadius: 1.8,      // 1.8px
-            theme: 'cyan'
+            theme: 'cyan',
+            bg: 'white'          // 'white' | 'dark'
         };
 
         /*
@@ -439,13 +458,14 @@
 
             ctx.clearRect(0, 0, width, height);
             // Flat solid page background (everything outside the capsule).
-            ctx.fillStyle = PAGE_BG;
+            ctx.fillStyle = state.bg === 'dark' ? DARK_BG : PAGE_BG;
             ctx.fillRect(0, 0, width, height);
 
             lightCtx.clearRect(0, 0, width, height);
             metaballCtx.clearRect(0, 0, width, height + bottomPad);
 
             const theme = colorPresets[state.theme];
+            const lightMode = state.bg !== 'dark';
 
             // Compute positions with cohesive spring restraint to avoid center voids
             const computedBlobs = blobs.map((b, idx) => {
@@ -479,12 +499,14 @@
             // Pass A: Draw bottom-focused radial gradient spheres onto metaball canvas for threshold fusion
             metaballCtx.save();
             /*
-             * Additive ('lighter') accumulation is the key to the gooey metaball look:
-             * neighbouring pools sum their falloffs instead of covering each other, so
-             * the gaps between blob centers stay bright and weld into one continuous
-             * body rather than reading as five separate lights.
+             * Dark background: additive ('lighter') accumulation gives the gooey
+             * metaball look — neighbouring pools sum their falloffs so the gaps stay
+             * bright and weld into one continuous body.
+             * Light (white) background: additive would saturate to white at the base,
+             * which reads as a white glow. Use normal blending instead so the base
+             * keeps the theme's cyan tone.
              */
-            metaballCtx.globalCompositeOperation = 'lighter';
+            metaballCtx.globalCompositeOperation = lightMode ? 'source-over' : 'lighter';
 
             computedBlobs.forEach(b => {
                 const fuseRadius = b.radius * 2.9;
@@ -506,11 +528,16 @@
                     // Smooth bell that reaches exactly 0 at the rim (no boundary ring).
                     // The edge weight dims the blobs towards the two tips.
                     const alpha = Math.exp(-3.0 * t * t) * (1 - t * t) * 0.62 * b.edge;
-                    // White-hot core blending out into the blob hue.
+                    // Dark bg: white-hot core blending into the blob hue.
+                    // Light bg: skip the white core entirely and stay on the blob hue,
+                    // so the base never looks like it is emitting white light.
+                    const coreR = lightMode ? b.color.r : 240;
+                    const coreG = lightMode ? b.color.g : 249;
+                    const coreB = lightMode ? b.color.b : 255;
                     const mix = Math.min(1, t / 0.45);
-                    const cr = Math.round(240 + (b.color.r - 240) * mix);
-                    const cg = Math.round(249 + (b.color.g - 249) * mix);
-                    const cb2 = Math.round(255 + (b.color.b - 255) * mix);
+                    const cr = Math.round(coreR + (b.color.r - coreR) * mix);
+                    const cg = Math.round(coreG + (b.color.g - coreG) * mix);
+                    const cb2 = Math.round(coreB + (b.color.b - coreB) * mix);
                     grad.addColorStop(t, `rgba(${cr}, ${cg}, ${cb2}, ${alpha.toFixed(4)})`);
                 }
 
@@ -553,7 +580,11 @@
             // contour has climbed up the rounded ends (up to ~half the capsule height),
             // while remaining brightest at the flat bottom.
             const waveGradient = lightCtx.createLinearGradient(0, capsuleBottom, 0, capsuleTop);
-            waveGradient.addColorStop(0.00, 'rgba(255, 255, 255, 0.95)');
+            // Light background: the base stays saturated cyan instead of white, so the
+            // capsule bottom does not look like it is glowing white.
+            waveGradient.addColorStop(0.00, lightMode
+                ? `rgba(${primaryColor.r}, ${primaryColor.g}, ${primaryColor.b}, 0.95)`
+                : 'rgba(255, 255, 255, 0.95)');
             waveGradient.addColorStop(0.10, `rgba(${primaryColor.r}, ${primaryColor.g}, ${primaryColor.b}, 0.80)`);
             waveGradient.addColorStop(0.30, `rgba(${secondaryColor.r}, ${secondaryColor.g}, ${secondaryColor.b}, 0.55)`);
             waveGradient.addColorStop(0.55, `rgba(${secondaryColor.r}, ${secondaryColor.g}, ${secondaryColor.b}, 0.25)`);
@@ -593,14 +624,36 @@
             lightCtx.fillStyle = waveGradient;
             lightCtx.fill();
 
+            if (lightMode) {
+                /*
+                 * A faint horizontal hue wash so the white-mode light is not one flat
+                 * slab of colour: teal on one side, sky blue in the middle, ocean blue
+                 * on the other. 'source-atop' only tints pixels that already contain
+                 * light, so brightness and transparency stay untouched.
+                 */
+                lightCtx.save();
+                lightCtx.globalCompositeOperation = 'source-atop';
+                const tint = lightCtx.createLinearGradient(capsuleLeft, 0, sceneRight, 0);
+                tint.addColorStop(0.00, `rgba(${theme.blobs[3].r}, ${theme.blobs[3].g}, ${theme.blobs[3].b}, 0.26)`);
+                tint.addColorStop(0.27, `rgba(${theme.blobs[4].r}, ${theme.blobs[4].g}, ${theme.blobs[4].b}, 0.06)`);
+                tint.addColorStop(0.52, `rgba(${theme.blobs[2].r}, ${theme.blobs[2].g}, ${theme.blobs[2].b}, 0.26)`);
+                tint.addColorStop(0.77, `rgba(${theme.blobs[0].r}, ${theme.blobs[0].g}, ${theme.blobs[0].b}, 0.06)`);
+                tint.addColorStop(1.00, `rgba(${theme.blobs[3].r}, ${theme.blobs[3].g}, ${theme.blobs[3].b}, 0.26)`);
+                lightCtx.fillStyle = tint;
+                lightCtx.fillRect(capsuleLeft, capsuleTop, capsuleW, capsuleH);
+                lightCtx.restore();
+            }
+
             lightCtx.restore();
 
             // Composite the liquid light layer onto the main canvas, clipped to the
             // capsule so both the glow and its edges stay strictly inside the pill.
+            // The capsule keeps its flat dark screen fill; only the page around it
+            // is pure white.
             ctx.save();
             capsulePath(ctx, capsuleLeft, capsuleTop, capsuleW, capsuleH);
             ctx.clip();
-            ctx.fillStyle = CAPSULE_FILL;
+            ctx.fillStyle = state.bg === 'dark' ? CAPSULE_FILL : CAPSULE_FILL_LIGHT;
             ctx.fillRect(capsuleLeft, capsuleTop, capsuleW, capsuleH);
             ctx.globalCompositeOperation = 'source-over';
             ctx.drawImage(lightCanvas, 0, 0, width, height);
@@ -649,7 +702,19 @@
             dotCtx.clearRect(0, 0, width, height);
             dotCtx.save();
             dotCtx.globalCompositeOperation = 'source-over';
+            // Dark mode keeps the pale dot hue. Light mode uses a VIVID colour taken
+            // from the nearest light blob, so the dots follow the flowing light's
+            // multiple hues instead of being one dark tint.
             const dotColor = theme.dots;
+            function dotHueAt(worldX) {
+                let best = null, bestDist = Infinity;
+                for (let k = 0; k < computedBlobs.length; k++) {
+                    const cb = computedBlobs[k];
+                    const d = Math.abs(worldX - cb.x);
+                    if (d < bestDist) { bestDist = d; best = cb; }
+                }
+                return best ? best.color : theme.blobs[0];
+            }
 
             for (let i = 0; i < dots.length; i++) {
                 const dot = dots[i];
@@ -696,8 +761,12 @@
                 // dissolves to fully transparent at the left/right edges.
                 const dotEdgeFade = Math.pow(Math.sin(Math.PI * nx), 1.0);
 
-                let finalOpacity = baseBrightness * bottomFadeFactor * (1 - lightCutout * 0.85 * maskDepth) * shimmer * dotEdgeFade;
-                finalOpacity = Math.max(0.0, Math.min(0.95, finalOpacity));
+                // White mode: the vivid dots sit on a light capsule, so weaken the
+                // light cut-out and lift the opacity to keep them clearly visible.
+                const cutout = lightMode ? lightCutout * 0.4 : lightCutout;
+                let finalOpacity = baseBrightness * bottomFadeFactor * (1 - cutout * 0.85 * maskDepth) * shimmer * dotEdgeFade;
+                if (lightMode) finalOpacity *= 1.6;
+                finalOpacity = Math.max(0.0, Math.min(lightMode ? 1.0 : 0.95, finalOpacity));
 
                 /*
                  * DESIGN DETAIL 9: Barely-Blurred Soft Dot Layer
@@ -711,7 +780,8 @@
 
                     dotCtx.beginPath();
                     dotCtx.arc(dot.x, dot.y, radius, 0, Math.PI * 2);
-                    dotCtx.fillStyle = `rgba(${dotColor.r}, ${dotColor.g}, ${dotColor.b}, ${finalOpacity})`;
+                    const dc = lightMode ? dotHueAt(dot.baseX) : dotColor;
+                    dotCtx.fillStyle = `rgba(${dc.r}, ${dc.g}, ${dc.b}, ${finalOpacity})`;
                     dotCtx.fill();
                 }
             }
@@ -722,8 +792,10 @@
             ctx.save();
             capsulePath(ctx, capsuleLeft, capsuleTop, capsuleW, capsuleH);
             ctx.clip();
-            ctx.filter = 'blur(0.45px)';
-            ctx.globalCompositeOperation = 'screen';
+            ctx.filter = `blur(${lightMode ? 0.3 : 0.45}px)`;
+            // Dark screen -> additive 'screen'; light capsule -> normal blending
+            // with the darker dot colour above, otherwise the dots wash out.
+            ctx.globalCompositeOperation = state.bg === 'dark' ? 'screen' : 'source-over';
             ctx.drawImage(dotCanvas, 0, 0, width, height);
             ctx.restore();
 
@@ -831,6 +903,20 @@
                 target.classList.add('bg-blue-600/40', 'border-cyan-400', 'text-cyan-300');
 
                 state.theme = target.getAttribute('data-theme');
+            });
+        });
+
+        document.querySelectorAll('.bg-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.bg-btn').forEach(b => b.classList.remove('active'));
+                const target = e.currentTarget;
+                target.classList.add('active');
+                state.bg = target.getAttribute('data-bg');
+
+                // Keep the CSS fallback in sync with the canvas fill.
+                const c = state.bg === 'dark' ? DARK_BG : PAGE_BG;
+                document.documentElement.style.background = c;
+                document.body.style.background = c;
             });
         });
 
