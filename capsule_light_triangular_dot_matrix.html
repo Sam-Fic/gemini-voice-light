@@ -6,7 +6,7 @@
     <title>Capsule Light &amp; Triangular Dot Matrix</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body { width: 100%; height: 100%; overflow: hidden; background: #ffffff; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #e9e8f1; }
         #mainCanvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
 
         /* Horizontal control bar pinned to the bottom, clear of the capsule. */
@@ -66,9 +66,10 @@
             white-space: nowrap;
         }
         button:hover { border-color: rgba(125, 211, 252, 0.6); }
-        .ctl-theme { width: 180px; }
+        .ctl-theme { width: 236px; }
         .theme-row { display: flex; gap: 6px; }
         .theme-btn { flex: 1; }
+        .theme-btn[data-theme="eta"]     { border-color: rgba(206,226,134,0.7); color:#d3e37c; }
         .theme-btn[data-theme="cyan"]    { border-color: rgba(56,189,248,0.7);  color:#7dd3fc; }
         .theme-btn[data-theme="violet"]  { border-color: rgba(167,139,250,0.7); color:#c4b5fd; }
         .theme-btn[data-theme="emerald"] { border-color: rgba(52,211,153,0.7);  color:#6ee7b7; }
@@ -85,6 +86,26 @@
     </style>
 </head>
 <body>
+    <!-- 微微色散（与 eta 的 AGSL 实现对应）：光层分三个通道层绘制——
+         绿层原位 source-over，红层（右移）与蓝层（左移）用 screen 加性合成。
+         各层 alpha 透传原图（screen 对不重叠通道=直接加回，内部颜色精确重组；
+         错位处单通道孤立 → 彩边）。注意：通道层用 source-over 叠加会得暗泥色
+         （SRC_OVER 是覆盖不是加回）。feColorMatrix 需 sRGB 插值，默认 linearRGB 会发灰。
+         HTML 用固定水平偏移近似（eta 为平底中点径向）。 -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+        <defs>
+            <filter id="eta-disp-g" color-interpolation-filters="sRGB">
+                <feColorMatrix type="matrix" values="0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0"/>
+            </filter>
+            <filter id="eta-disp-r" color-interpolation-filters="sRGB">
+                <feColorMatrix type="matrix" values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0"/>
+            </filter>
+            <filter id="eta-disp-b" color-interpolation-filters="sRGB">
+                <feColorMatrix type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0"/>
+            </filter>
+        </defs>
+    </svg>
+
     <canvas id="mainCanvas"></canvas>
 
     <div id="panel">
@@ -104,18 +125,24 @@
         </div>
 
         <div class="ctl">
-            <label>Dot Size <span class="val" id="dotSizeVal">1.8px</span></label>
-            <input type="range" id="dotSizeRange" min="0.5" max="4" step="0.1" value="1.8">
+            <label>Dot Size <span class="val" id="dotSizeVal">4px</span></label>
+            <input type="range" id="dotSizeRange" min="0.5" max="6" step="0.1" value="4">
         </div>
 
         <div class="ctl">
-            <label>Spacing <span class="val" id="spacingVal">25px</span></label>
-            <input type="range" id="spacingRange" min="8" max="40" step="1" value="25">
+            <label>Spacing <span class="val" id="spacingVal">48px</span></label>
+            <input type="range" id="spacingRange" min="8" max="64" step="1" value="48">
+        </div>
+
+        <div class="ctl">
+            <label>Dispersion <span class="val" id="dispVal">6u</span></label>
+            <input type="range" id="dispRange" min="0" max="16" step="1" value="6">
         </div>
 
         <div class="ctl ctl-theme">
             <label>Theme</label>
             <div class="theme-row">
+                <button class="theme-btn" data-theme="eta">Eta</button>
                 <button class="theme-btn" data-theme="cyan">Cyan</button>
                 <button class="theme-btn" data-theme="violet">Violet</button>
                 <button class="theme-btn" data-theme="emerald">Emerald</button>
@@ -160,10 +187,13 @@
         const bottomPad = 260;
 
         // ----- Solid colors (no gradients / no effects on the capsule itself) -----
-        const PAGE_BG = '#ffffff';       // page background — white preset
-        const DARK_BG = '#070b12';       // page background — dark preset
-        const CAPSULE_FILL = '#0d1626';  // capsule interior on dark background
-        const CAPSULE_FILL_LIGHT = '#e3ebf5'; // capsule interior on white background
+        // 2026-11-11 与 eta 对齐：浅色页面=eta scaffold 背景近似（灰紫），胶囊=surfaceBright
+        // 档（从页面背景浮出一档的近白亮表面）；深色胶囊=surfaceContainerLowest 档（近黑）。
+        // demo 用近似值，以 eta 实机 token 为准。
+        const PAGE_BG = '#e9e8f1';       // page background — light preset (eta scaffold 近似)
+        const DARK_BG = '#08080b';       // page background — dark preset
+        const CAPSULE_FILL = '#0e0d12';  // capsule interior on dark background (surfaceContainerLowest 档)
+        const CAPSULE_FILL_LIGHT = '#f4f3f9'; // capsule interior on light background (surfaceBright 档)
 
         // ----- Capsule mask geometry (recomputed on resize) -----
         let capsuleLeft = 0, capsuleTop = 0;
@@ -199,57 +229,90 @@
             return capsuleTop + capsuleH;
         }
 
-        // ----- simulation state settings initialized to screenshot values -----
+        // ----- simulation state settings (2026-11-11 aligned with the eta app) -----
         const state = {
             speed: 1.5,
             glowIntensity: 0.8,  // 80%
             maskForce: 1.2,
-            spacing: 25,         // 25px
-            dotRadius: 1.8,      // 1.8px
-            theme: 'cyan',
+            spacing: 48,         // eta 48u（原型 25 等比缩放后列距过密、糊成纹理）
+            dotRadius: 4.0,      // eta 4u（原型 1.8 缩放后直径 ~0.75dp 几乎不可见）
+            dispersion: 6,       // eta 6u：微微色散（红/蓝通道径向错位）
+            theme: 'eta',
             bg: 'white'          // 'white' | 'dark'
         };
 
         /*
          * =========================================================================
-         * DESIGN DETAIL 1: Color Palettes & Blob Parameters
-         * Standardized preset colors across cyan, violet, and emerald palettes.
-         * Primary cyan colors are focused on bright white-cyan hues (240, 249, 255)
-         * to prevent muddy or purplish tones from surfacing at high blur values.
+         * DESIGN DETAIL 1 (2026-11-11 aligned with the eta app): theme ANCHORS.
+         * 每个主题只提供两枚锚色，其余全部按 eta 的派生结构生成（见 deriveTheme）：
+         *   浅色 = base + White 提亮梯（0 / 0.20 / 0.16 / 0.34 / 0.08 五档，角色分工：
+         *          blobs[1]=0.20 供波浪上段渐隐、blobs[3]=0.34 高光/水洗两端），
+         *          不混黑、白热核心用本色；dots = base 混白 0.7（发白防发灰）。
+         *   深色 = base 与 deeper（暗色 scheme 深端）色阶（0 / 0.15 / 0.34 / 0.10 / 0.24），
+         *          dots = base 混白 0.36，白热核心 = base 混白 0.92。
+         * eta 主题的锚色为 eta 实机 token 近似值（浅=tertiaryContainer、
+         * 深=primary/inversePrimary），以实机为准。
          * =========================================================================
          */
-        const colorPresets = {
+        const themeAnchors = {
+            eta: {
+                light: { r: 206, g: 226, b: 134 },
+                dark: { base: { r: 167, g: 158, b: 228 }, deeper: { r: 109, g: 99, b: 178 } }
+            },
             cyan: {
-                blobs: [
-                    { r: 56, g: 189, b: 248 },  // Sky cyan
-                    { r: 14, g: 165, b: 233 },  // Deep cyan
-                    { r: 59, g: 130, b: 246 },  // Ocean blue
-                    { r: 38, g: 198, b: 218 },  // Aqua teal
-                    { r: 96, g: 165, b: 250 }   // Light cyan-blue
-                ],
-                dots: { r: 186, g: 230, b: 253 }
+                light: { r: 56, g: 189, b: 248 },
+                dark: { base: { r: 14, g: 165, b: 233 }, deeper: { r: 12, g: 83, b: 150 } }
             },
             violet: {
-                blobs: [
-                    { r: 168, g: 85, b: 247 },
-                    { r: 217, g: 70, b: 239 },
-                    { r: 99, g: 102, b: 241 },
-                    { r: 192, g: 38, b: 211 },
-                    { r: 139, g: 92, b: 246 }
-                ],
-                dots: { r: 243, g: 232, b: 255 }
+                light: { r: 168, g: 85, b: 247 },
+                dark: { base: { r: 167, g: 139, b: 250 }, deeper: { r: 99, g: 102, b: 241 } }
             },
             emerald: {
-                blobs: [
-                    { r: 16, g: 185, b: 129 },
-                    { r: 6, g: 182, b: 212 },
-                    { r: 59, g: 130, b: 246 },
-                    { r: 20, g: 184, b: 166 },
-                    { r: 52, g: 211, b: 153 }
-                ],
-                dots: { r: 167, g: 243, b: 208 }
+                light: { r: 52, g: 211, b: 153 },
+                dark: { base: { r: 16, g: 185, b: 129 }, deeper: { r: 6, g: 182, b: 212 } }
             }
         };
+
+        const WHITE = { r: 255, g: 255, b: 255 };
+        function mixColor(a, b, t) {
+            return {
+                r: Math.round(a.r + (b.r - a.r) * t),
+                g: Math.round(a.g + (b.g - a.g) * t),
+                b: Math.round(a.b + (b.b - a.b) * t)
+            };
+        }
+
+        // Derive the per-frame theme palette from the anchors, mirroring eta's
+        // glowPalette(base, deeper, lightMode) one-for-one (ladder values included).
+        function deriveTheme(anchors, lightMode) {
+            if (lightMode) {
+                const base = anchors.light;
+                return {
+                    blobs: [
+                        base,
+                        mixColor(base, WHITE, 0.20),
+                        mixColor(base, WHITE, 0.16),
+                        mixColor(base, WHITE, 0.34),
+                        mixColor(base, WHITE, 0.08)
+                    ],
+                    dots: mixColor(base, WHITE, 0.7),
+                    core: base
+                };
+            }
+            const base = anchors.dark.base;
+            const deeper = anchors.dark.deeper;
+            return {
+                blobs: [
+                    base,
+                    mixColor(base, deeper, 0.15),
+                    mixColor(base, deeper, 0.34),
+                    mixColor(base, deeper, 0.10),
+                    mixColor(base, deeper, 0.24)
+                ],
+                dots: mixColor(base, WHITE, 0.36),
+                core: mixColor(base, WHITE, 0.92)
+            };
+        }
 
         /*
          * =========================================================================
@@ -282,10 +345,10 @@
         document.getElementById('glowVal').textContent = '80%';
         document.getElementById('maskRange').value = 1.2;
         document.getElementById('maskVal').textContent = '1.2x';
-        document.getElementById('dotSizeRange').value = 1.8;
-        document.getElementById('dotSizeVal').textContent = '1.8px';
-        document.getElementById('spacingRange').value = 25;
-        document.getElementById('spacingVal').textContent = '25px';
+        document.getElementById('dotSizeRange').value = 4;
+        document.getElementById('dotSizeVal').textContent = '4px';
+        document.getElementById('spacingRange').value = 48;
+        document.getElementById('spacingVal').textContent = '48px';
 
         let dots = [];
 
@@ -421,6 +484,28 @@
 
         let time = 0;
 
+        // ----- eta 交互编排（2026-11-11 对齐）-----
+        // 启动预热：36 帧 ≈600ms，easeOutCubic 从全灭升到实际强度（每个会话只播一次）；
+        // 退场冷却：21 帧 ≈350ms，(1-t)³ 缓降，与 eta pill 槽退场淡出同长。
+        // 页面加载即播一次预热；Enable Mic 点燃预热，Disable Mic 点燃冷却。
+        const WARMUP_FRAMES = 36;
+        const COOLDOWN_FRAMES = 21;
+        let warmupFrames = 0, warmupEase = 0;
+        let cooldownFrames = -1, cooldownEase = 1;
+
+        // 光抬升系数（草稿同款 yProgress - light·0.3）与顶/底渐隐带宽度（eta 定稿值）。
+        const LIGHT_LIFT = 0.3;
+        const DOT_TOP_FADE_BAND = 0.65;
+        const DOT_BOTTOM_FADE_BAND = 0.4;
+
+        // canvas ctx.filter 的 url(#svgfilter) 支持（Safari 部分版本不支持）——
+        // 不支持时色散层跳过，光层原样单次绘制。
+        const canvasFilterOk = (() => {
+            const probe = document.createElement('canvas').getContext('2d');
+            probe.filter = 'url(#eta-disp-g)';
+            return probe.filter !== 'none' && probe.filter !== '';
+        })();
+
         function animate() {
             if (!isRunning) return;
 
@@ -449,10 +534,21 @@
                 smoothedVolume = 0;
             }
 
+            // eta 交互编排：预热先推进（easeOutCubic 缓出），冷却镜像缓降——两者都乘进
+            // 光强与点阵透明度，光效从全灭升到实际强度、退场时缓降到全灭。
+            warmupFrames = Math.min(warmupFrames + 1, WARMUP_FRAMES);
+            const warmupT = warmupFrames / WARMUP_FRAMES;
+            warmupEase = 1 - Math.pow(1 - warmupT, 3);
+            if (cooldownFrames >= 0) {
+                cooldownFrames = Math.min(cooldownFrames + 1, COOLDOWN_FRAMES);
+                cooldownEase = Math.pow(1 - cooldownFrames / COOLDOWN_FRAMES, 3);
+            }
+
             // Dynamic speed & glow intensity boosted by smoothed volume.
             // Louder microphone input adds more speed (up to +2.6x on top of the slider).
             const activeSpeed = state.speed + (isMicActive ? volumeFactor * 2.6 : 0);
-            const activeGlowIntensity = state.glowIntensity * (isMicActive ? (1.0 + volumeFactor * 1.4) : 1.0);
+            const activeGlowIntensity = state.glowIntensity *
+                (isMicActive ? (1.0 + volumeFactor * 1.4) : 1.0) * warmupEase * cooldownEase;
 
             time += 0.019 * activeSpeed;
 
@@ -464,8 +560,8 @@
             lightCtx.clearRect(0, 0, width, height);
             metaballCtx.clearRect(0, 0, width, height + bottomPad);
 
-            const theme = colorPresets[state.theme];
             const lightMode = state.bg !== 'dark';
+            const theme = deriveTheme(themeAnchors[state.theme], lightMode);
 
             // Compute positions with cohesive spring restraint to avoid center voids
             const computedBlobs = blobs.map((b, idx) => {
@@ -498,6 +594,8 @@
 
             // Pass A: Draw bottom-focused radial gradient spheres onto metaball canvas for threshold fusion
             metaballCtx.save();
+            // 预热/冷却：光团层整体透明度随编排缓升缓降（波浪/水洗在光层统一乘）。
+            metaballCtx.globalAlpha = warmupEase;
             /*
              * Dark background: additive ('lighter') accumulation gives the gooey
              * metaball look — neighbouring pools sum their falloffs so the gaps stay
@@ -528,16 +626,15 @@
                     // Smooth bell that reaches exactly 0 at the rim (no boundary ring).
                     // The edge weight dims the blobs towards the two tips.
                     const alpha = Math.exp(-3.0 * t * t) * (1 - t * t) * 0.62 * b.edge;
-                    // Dark bg: white-hot core blending into the blob hue.
+                    // Dark bg: white-hot core blending into the blob hue
+                    // (eta: core = base 混白 0.92，随主题派生，不再硬编码近白)。
                     // Light bg: skip the white core entirely and stay on the blob hue,
                     // so the base never looks like it is emitting white light.
-                    const coreR = lightMode ? b.color.r : 240;
-                    const coreG = lightMode ? b.color.g : 249;
-                    const coreB = lightMode ? b.color.b : 255;
+                    const core = lightMode ? b.color : theme.core;
                     const mix = Math.min(1, t / 0.45);
-                    const cr = Math.round(coreR + (b.color.r - coreR) * mix);
-                    const cg = Math.round(coreG + (b.color.g - coreG) * mix);
-                    const cb2 = Math.round(coreB + (b.color.b - coreB) * mix);
+                    const cr = Math.round(core.r + (b.color.r - core.r) * mix);
+                    const cg = Math.round(core.g + (b.color.g - core.g) * mix);
+                    const cb2 = Math.round(core.b + (b.color.b - core.b) * mix);
                     grad.addColorStop(t, `rgba(${cr}, ${cg}, ${cb2}, ${alpha.toFixed(4)})`);
                 }
 
@@ -555,6 +652,8 @@
             // Pass B: Combine metaball fused canvas with controlled Gaussian diffusion filter
             lightCtx.save();
             lightCtx.globalCompositeOperation = 'source-over';
+            // 预热/冷却：波浪主体与色相水洗的透明度随编排一起缓升缓降（eta 同款）。
+            lightCtx.globalAlpha = warmupEase;
             lightCtx.filter = 'blur(30px)';
             // Draw 1:1. The metaball canvas extends bottomPad below the viewport, so
             // the blur kernel no longer samples empty space past the bottom edge and
@@ -656,7 +755,27 @@
             ctx.fillStyle = state.bg === 'dark' ? CAPSULE_FILL : CAPSULE_FILL_LIGHT;
             ctx.fillRect(capsuleLeft, capsuleTop, capsuleW, capsuleH);
             ctx.globalCompositeOperation = 'source-over';
-            ctx.drawImage(lightCanvas, 0, 0, width, height);
+            /*
+             * 微微色散（eta: AGSL 径向分离，demo 用 SVG 通道滤色近似）：光层画三遍——
+             * 绿层原位 source-over；红层右移、蓝层左移，均以 screen 加性合成
+             * （通道互不重叠 → screen=加回，内部颜色精确重组；错位处单通道孤立 →
+             * 彩边）。量级 = state.dispersion · (capsuleH/337)（对应 eta 的 6u，
+             * u = 高度/337）。ctx.filter 不支持 url(#svg) 的浏览器降级为单次绘制。
+             */
+            const disp = state.dispersion * (capsuleH / 337);
+            if (disp > 0.2 && canvasFilterOk) {
+                ctx.filter = 'url(#eta-disp-g)';
+                ctx.drawImage(lightCanvas, 0, 0, width, height);
+                ctx.filter = 'url(#eta-disp-r)';
+                ctx.globalCompositeOperation = 'screen';
+                ctx.drawImage(lightCanvas, disp, 0, width, height);
+                ctx.filter = 'url(#eta-disp-b)';
+                ctx.drawImage(lightCanvas, -disp, 0, width, height);
+                ctx.filter = 'none';
+                ctx.globalCompositeOperation = 'source-over';
+            } else {
+                ctx.drawImage(lightCanvas, 0, 0, width, height);
+            }
             ctx.restore();
 
             /*
@@ -702,19 +821,11 @@
             dotCtx.clearRect(0, 0, width, height);
             dotCtx.save();
             dotCtx.globalCompositeOperation = 'source-over';
-            // Dark mode keeps the pale dot hue. Light mode uses a VIVID colour taken
-            // from the nearest light blob, so the dots follow the flowing light's
-            // multiple hues instead of being one dark tint.
+            // 点阵发白（eta 2026-11-11 定稿）：两模式统一 theme.dots——
+            // 浅色 = base 混白 0.7（比底亮的点半透明混合只会更亮、不会发灰；
+            // 旧的「取最近光团鲜艳色」会让混黑档色相进点阵，是中段发灰的来源），
+            // 深色 = base 混白 0.36 + screen 提亮。
             const dotColor = theme.dots;
-            function dotHueAt(worldX) {
-                let best = null, bestDist = Infinity;
-                for (let k = 0; k < computedBlobs.length; k++) {
-                    const cb = computedBlobs[k];
-                    const d = Math.abs(worldX - cb.x);
-                    if (d < bestDist) { bestDist = d; best = cb; }
-                }
-                return best ? best.color : theme.blobs[0];
-            }
 
             for (let i = 0; i < dots.length; i++) {
                 const dot = dots[i];
@@ -743,15 +854,24 @@
                 // Y progress within the capsule: 0 at its bottom, 1 at its top
                 let yProgress = Math.max(0, Math.min(1, (capsuleBottom - dot.baseY) / capsuleH));
 
-                // Dynamic fade height: Aurora light intensity smoothly lifts dot visibility higher
-                let adjustedYProgress = Math.max(0, yProgress - (lightIntensity * 0.3));
+                /*
+                 * 整张网模型（eta 2026-11-11 定稿，取代旧的 baseBrightness 60% 硬截断 +
+                 * 光抬升机制）：点常驻铺满整颗胶囊，透明度只由五件事调制——
+                 * 顶部渐隐带、底部淡入带（两者都吃光抬升）、光挖空（越亮越淡）、
+                 * 左右边缘淡出与闪烁。
+                 * 光抬升（草稿同款 yProgress - light·0.3）：光晕越亮，点的有效高度越低——
+                 * 顶带淡出位置随光往上推，底带淡入起点随光往上移（光晕越强，
+                 * 淡入开始位置越远）。一个系数喂两条带。
+                 */
+                const litYProgress = Math.max(0, yProgress - lightIntensity * LIGHT_LIFT);
 
-                // Base brightness fades out smoothly reaching 0 at ~60% adjusted height
-                let baseBrightness = Math.max(0, 1.0 - (adjustedYProgress / 0.6));
-                baseBrightness = Math.pow(baseBrightness, 1.4);
+                // 顶部渐隐带：带底满亮 → 顶缘 0（带宽 0.65，1.4 幂曲线与草稿
+                // baseBrightness 同形——顶部读得出长渐变，而不是几乎铺满）。
+                const topFade = Math.pow(Math.min(1, Math.max(0, (1 - litYProgress) / DOT_TOP_FADE_BAND)), 1.4);
 
-                // Bottom 1/3 Fade-in Gradient: 0 opacity at absolute bottom, ramping up to 1.0 at 1/3 height
-                const bottomFadeFactor = Math.min(1.0, yProgress / 0.333);
+                // 底部淡入带：底缘 0 → 带顶 1（eta 迭代链 1/3 → 1/2 → 0.4 定稿——
+                // 疏网格下 1/3 读不出渐变，1/2 低区半透点太多）。
+                const bottomFadeFactor = Math.min(1.0, litYProgress / DOT_BOTTOM_FADE_BAND);
 
                 // Invert: Strong light reduces dot opacity in the lower regions
                 const lightCutout = Math.min(1.0, lightIntensity * state.maskForce);
@@ -761,11 +881,13 @@
                 // dissolves to fully transparent at the left/right edges.
                 const dotEdgeFade = Math.pow(Math.sin(Math.PI * nx), 1.0);
 
-                // White mode: the vivid dots sit on a light capsule, so weaken the
+                // White mode: the whitened dots sit on a light capsule, so weaken the
                 // light cut-out and lift the opacity to keep them clearly visible.
                 const cutout = lightMode ? lightCutout * 0.4 : lightCutout;
-                let finalOpacity = baseBrightness * bottomFadeFactor * (1 - cutout * 0.85 * maskDepth) * shimmer * dotEdgeFade;
+                let finalOpacity = topFade * bottomFadeFactor * (1 - cutout * 0.85 * maskDepth) * shimmer * dotEdgeFade;
                 if (lightMode) finalOpacity *= 1.6;
+                // 预热/冷却：点阵亮度随编排一起缓升缓降（eta 同款）。
+                finalOpacity *= warmupEase;
                 finalOpacity = Math.max(0.0, Math.min(lightMode ? 1.0 : 0.95, finalOpacity));
 
                 /*
@@ -780,8 +902,7 @@
 
                     dotCtx.beginPath();
                     dotCtx.arc(dot.x, dot.y, radius, 0, Math.PI * 2);
-                    const dc = lightMode ? dotHueAt(dot.baseX) : dotColor;
-                    dotCtx.fillStyle = `rgba(${dc.r}, ${dc.g}, ${dc.b}, ${finalOpacity})`;
+                    dotCtx.fillStyle = `rgba(${dotColor.r}, ${dotColor.g}, ${dotColor.b}, ${finalOpacity})`;
                     dotCtx.fill();
                 }
             }
@@ -818,6 +939,8 @@
                     audioContext.close();
                 }
                 isMicActive = false;
+                // eta 退场冷却：点燃一次性缓降（光效缓降到全灭，≈350ms）。
+                cooldownFrames = 0;
                 micBtn.classList.remove('bg-emerald-600/40', 'border-emerald-400', 'text-emerald-300');
                 micBtn.classList.add('bg-slate-800', 'border-slate-700', 'text-slate-300');
                 micText.textContent = 'Enable Mic';
@@ -835,6 +958,11 @@
 
                 audioDataArray = new Uint8Array(analyser.frequencyBinCount);
                 isMicActive = true;
+                // eta 启动预热：从全灭在 ≈600ms 内缓升到实际强度；冷却期内开启则
+                // 撤销冷却、原地复燃。
+                warmupFrames = 0;
+                cooldownFrames = -1;
+                cooldownEase = 1;
 
                 micBtn.classList.remove('bg-slate-800', 'border-slate-700', 'text-slate-300');
                 micBtn.classList.add('bg-emerald-600/40', 'border-emerald-400', 'text-emerald-300');
@@ -886,6 +1014,11 @@
             buildTriangularGrid();
         });
 
+        document.getElementById('dispRange').addEventListener('input', (e) => {
+            state.dispersion = parseInt(e.target.value);
+            document.getElementById('dispVal').textContent = state.dispersion + 'u';
+        });
+
         document.getElementById('dotSizeRange').addEventListener('input', (e) => {
             state.dotRadius = parseFloat(e.target.value);
             document.getElementById('dotSizeVal').textContent = state.dotRadius.toFixed(1) + 'px';
@@ -920,9 +1053,9 @@
             });
         });
 
-        // Mark the default cyan theme button as active on load
+        // Mark the default eta theme button as active on load
         (function initTheme() {
-            const active = document.querySelector('.theme-btn[data-theme="cyan"]');
+            const active = document.querySelector('.theme-btn[data-theme="eta"]');
             if (active) {
                 active.classList.remove('bg-slate-900', 'border-slate-700', 'text-slate-300');
                 active.classList.add('bg-blue-600/40', 'border-cyan-400', 'text-cyan-300');
